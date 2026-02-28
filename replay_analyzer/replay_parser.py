@@ -57,15 +57,21 @@ class ReplayReader:
         self._format = self._detect_format()
 
     def _detect_format(self) -> str:
-        """Detect legacy vs modern format.
+        """Detect replay format: legacy, modern, or modern121.
 
         Legacy (pre-1.18): PKWare DCL Implode compression.
-        Modern (1.18+): zlib compression, detected by 0x78 at byte 28.
+        Modern (1.18-1.20): zlib compression, replay ID "reRS".
+        Modern121 (1.21+/Remastered): zlib compression, replay ID "seRS",
+            extra 4-byte gap between sections 1 and 2.
 
         Reference: https://github.com/icza/screp/blob/main/repparser/repdecoder/repdecoder.go
         """
         if len(self._data) < 30:
             raise ReplayParseError("File too small to be a replay")
+        # Replay ID data sits at offset 12 (after checksum+chunk_count+compressed_len).
+        # 's' (0x73) at byte 12 = "seRS" = Modern 1.21+.
+        if self._data[12] == ord("s"):
+            return "modern121"
         if self._data[28] == 0x78:
             return "modern"
         return "legacy"
@@ -119,15 +125,15 @@ class ReplayReader:
             # Too small to be compressed, return as-is
             return data
 
-        if self._format == "modern" and data[0] == 0x78:
-            return zlib.decompress(data)
+        if self._format in ("modern", "modern121"):
+            # Modern formats use zlib; check per-chunk for 0x78 magic.
+            if data[0] == 0x78:
+                return zlib.decompress(data)
+            return data
 
-        if self._format == "legacy":
-            dec = dclimplode.decompressobj_blast()
-            return dec.decompress(data)
-
-        # Modern but not zlib-compressed (raw data)
-        return data
+        # Legacy: PKWare DCL Implode
+        dec = dclimplode.decompressobj_blast()
+        return dec.decompress(data)
 
 
 def _cstring(data: bytes) -> str:
@@ -410,6 +416,11 @@ def parse_replay(path: str | Path) -> Replay:
             f"Not a valid replay file: expected 'reRS' or 'seRS', "
             f"got {replay_id_data!r}"
         )
+
+    # Modern 1.21+ has an extra 4-byte value between sections 0 and 1.
+    # Reference: https://github.com/icza/screp/blob/main/repparser/repdecoder/repdecoder.go
+    if reader.format == "modern121":
+        reader._read_int32()  # skip encoded length
 
     # Section 1: Header (633 bytes)
     header_data = reader.read_section(SECTION_SIZES[1])
