@@ -36,6 +36,19 @@ def main() -> None:
         ptype = "Human" if p.type in (2, 6) else "Computer"
         print(f"  {p.name} ({race}, {ptype}) - Team {p.team}")
 
+    if replay.build_order:
+        # Group events by player_id
+        player_map = {p.player_id: p.name for p in active_players}
+        events_by_player: dict[int, list] = {}
+        for event in replay.build_order:
+            events_by_player.setdefault(event.player_id, []).append(event)
+
+        for pid in sorted(events_by_player):
+            name = player_map.get(pid, f"Player {pid}")
+            print(f"\nBuild Order — {name}:")
+            for e in events_by_player[pid]:
+                print(f"  [{e.frame}] {e.event_type:<15} {e.name}")
+
 
 if __name__ == "__main__":
     main()

@@ -16,6 +16,7 @@ from pathlib import Path
 import dclimplode
 
 from replay_analyzer.models import (
+    BuildOrderEvent,
     GameSpeed,
     GameType,
     Header,
@@ -23,6 +24,9 @@ from replay_analyzer.models import (
     PlayerType,
     Race,
     Replay,
+    TECH_NAMES,
+    UNIT_NAMES,
+    UPGRADE_NAMES,
 )
 
 # Valid replay ID magic bytes.
@@ -198,11 +202,203 @@ def _parse_header(data: bytes) -> Header:
     )
 
 
+# Command type ID -> param byte count (after the type byte).
+# Variable-length commands (select, save/load) handled specially.
+# Reference: https://github.com/icza/screp/blob/main/repparser/repparser.go
+CMD_PARAM_SIZES: dict[int, int] = {
+    0x05: 0,   # KeepAlive
+    0x06: -1,  # SaveGame (variable: 4-byte length + data)
+    0x07: -1,  # LoadGame (variable: 4-byte length + data)
+    0x08: 0,   # RestartGame
+    0x09: -2,  # Select (variable: 1 + count*2)
+    0x0A: -2,  # SelectAdd (variable: 1 + count*2)
+    0x0B: -2,  # SelectRemove (variable: 1 + count*2)
+    0x0C: 7,   # Build (order + x + y + unit_id)
+    0x0D: 2,   # Vision
+    0x0E: 4,   # Alliance
+    0x0F: 1,   # GameSpeed
+    0x10: 0,   # Pause
+    0x11: 0,   # Resume
+    0x12: 4,   # Cheat
+    0x13: 2,   # Hotkey
+    0x14: 9,   # RightClick
+    0x15: 10,  # TargetedOrder
+    0x18: 0,   # CancelBuild
+    0x19: 0,   # CancelMorph
+    0x1A: 1,   # Stop (queued byte)
+    0x1B: 0,   # CarrierStop
+    0x1C: 0,   # ReaverStop
+    0x1D: 0,   # OrderNothing
+    0x1E: 1,   # ReturnCargo (queued)
+    0x1F: 2,   # Train
+    0x20: 2,   # CancelTrain
+    0x21: 1,   # Cloack (queued)
+    0x22: 1,   # Decloack (queued)
+    0x23: 2,   # UnitMorph
+    0x25: 1,   # Unsiege (queued)
+    0x26: 1,   # Siege (queued)
+    0x27: 0,   # TrainFighter (interceptor/scarab)
+    0x28: 1,   # UnloadAll (queued)
+    0x29: 2,   # Unload
+    0x2A: 0,   # MergeArchon
+    0x2B: 1,   # HoldPosition (queued)
+    0x2C: 1,   # Burrow (queued)
+    0x2D: 1,   # Unburrow (queued)
+    0x2E: 0,   # CancelNuke
+    0x2F: 4,   # LiftOff
+    0x30: 1,   # Tech
+    0x31: 0,   # CancelTech
+    0x32: 1,   # Upgrade
+    0x33: 0,   # CancelUpgrade
+    0x34: 0,   # CancelAddon
+    0x35: 2,   # BuildingMorph
+    0x36: 0,   # Stim
+    0x37: 6,   # Sync
+    0x38: 0,   # VoiceEnable
+    0x39: 0,   # VoiceDisable
+    0x3A: 1,   # VoiceSquelch
+    0x3B: 1,   # VoiceUnsquelch
+    0x3C: 0,   # StartGame
+    0x3D: 1,   # DownloadPercentage
+    0x3E: 5,   # ChangeGameSlot
+    0x3F: 7,   # NewNetPlayer
+    0x40: 17,  # JoinedGame
+    0x41: 2,   # ChangeRace
+    0x42: 1,   # TeamGameTeam
+    0x43: 1,   # UMSTeam
+    0x44: 2,   # MeleeTeam
+    0x45: 2,   # SwapPlayers
+    0x48: 12,  # SavedData
+    0x54: 0,   # BriefingStart
+    0x55: 1,   # Latency
+    0x56: 9,   # ReplaySpeed
+    0x57: 1,   # LeaveGame
+    0x58: 4,   # MinimapPing
+    0x5A: 0,   # MergeDarkArchon
+    0x5B: 0,   # MakeGamePublic
+    0x5C: 81,  # Chat
+    # 1.21+ commands
+    0x60: 11,  # RightClick121
+    0x61: 12,  # TargetedOrder121
+    0x62: 4,   # Unload121
+    0x63: -3,  # Select121 (variable: 1 + count*4)
+    0x64: -3,  # SelectAdd121 (variable: 1 + count*4)
+    0x65: -3,  # SelectRemove121 (variable: 1 + count*4)
+}
+
+# Build-order relevant command type IDs.
+_BUILD_CMD = 0x0C
+_TRAIN_CMD = 0x1F
+_UNIT_MORPH_CMD = 0x23
+_TECH_CMD = 0x30
+_UPGRADE_CMD = 0x32
+_BUILDING_MORPH_CMD = 0x35
+
+
+def _parse_commands(data: bytes) -> list[BuildOrderEvent]:
+    """Parse the commands section and extract build-order events.
+
+    Frame block format: frame(4) + block_size(1) + [player_id(1) + type_id(1) + params]*
+    Reference: https://github.com/icza/screp/blob/main/repparser/repparser.go
+    """
+    events: list[BuildOrderEvent] = []
+    pos = 0
+    size = len(data)
+
+    while pos < size:
+        if pos + 5 > size:
+            break
+
+        frame = struct.unpack_from("<I", data, pos)[0]
+        pos += 4
+        block_size = data[pos]
+        pos += 1
+        block_end = pos + block_size
+
+        while pos < block_end:
+            if pos + 2 > block_end:
+                pos = block_end
+                break
+
+            player_id = data[pos]
+            pos += 1
+            type_id = data[pos]
+            pos += 1
+
+            param_size = CMD_PARAM_SIZES.get(type_id)
+
+            if param_size is None:
+                # Unknown command type, skip to end of block
+                pos = block_end
+                break
+            elif param_size == -1:
+                # SaveGame/LoadGame: 4-byte length prefix + data
+                if pos + 4 > block_end:
+                    pos = block_end
+                    break
+                count = struct.unpack_from("<I", data, pos)[0]
+                pos += 4 + count
+                continue
+            elif param_size == -2:
+                # Select variants: 1 byte count + count*2 bytes
+                if pos >= block_end:
+                    pos = block_end
+                    break
+                count = data[pos]
+                pos += 1 + count * 2
+                continue
+            elif param_size == -3:
+                # Select121 variants: 1 byte count + count*4 bytes
+                if pos >= block_end:
+                    pos = block_end
+                    break
+                count = data[pos]
+                pos += 1 + count * 4
+                continue
+
+            # Extract build-order events before advancing past params
+            if type_id == _BUILD_CMD and param_size >= 7:
+                # Build: order(1) + x(2) + y(2) + unit_id(2)
+                unit_id = struct.unpack_from("<H", data, pos + 5)[0]
+                name = UNIT_NAMES.get(unit_id, f"Unknown Unit ({unit_id:#x})")
+                events.append(BuildOrderEvent(frame, player_id, "build", name))
+
+            elif type_id == _TRAIN_CMD and param_size >= 2:
+                unit_id = struct.unpack_from("<H", data, pos)[0]
+                name = UNIT_NAMES.get(unit_id, f"Unknown Unit ({unit_id:#x})")
+                events.append(BuildOrderEvent(frame, player_id, "train", name))
+
+            elif type_id == _UNIT_MORPH_CMD and param_size >= 2:
+                unit_id = struct.unpack_from("<H", data, pos)[0]
+                name = UNIT_NAMES.get(unit_id, f"Unknown Unit ({unit_id:#x})")
+                events.append(BuildOrderEvent(frame, player_id, "morph", name))
+
+            elif type_id == _TECH_CMD:
+                tech_id = data[pos]
+                name = TECH_NAMES.get(tech_id, f"Unknown Tech ({tech_id:#x})")
+                events.append(BuildOrderEvent(frame, player_id, "tech", name))
+
+            elif type_id == _UPGRADE_CMD:
+                upgrade_id = data[pos]
+                name = UPGRADE_NAMES.get(upgrade_id, f"Unknown Upgrade ({upgrade_id:#x})")
+                events.append(BuildOrderEvent(frame, player_id, "upgrade", name))
+
+            elif type_id == _BUILDING_MORPH_CMD and param_size >= 2:
+                unit_id = struct.unpack_from("<H", data, pos)[0]
+                name = UNIT_NAMES.get(unit_id, f"Unknown Unit ({unit_id:#x})")
+                events.append(BuildOrderEvent(frame, player_id, "building_morph", name))
+
+            pos += param_size
+
+    events.sort(key=lambda e: e.frame)
+    return events
+
+
 def parse_replay(path: str | Path) -> Replay:
     """Parse a .rep replay file and return a Replay object.
 
-    Currently parses sections 0 (Replay ID) and 1 (Header).
-    Sections 2-4 (Commands, Map Data, Player Names) are skipped.
+    Parses sections 0 (Replay ID), 1 (Header), and 2 (Commands).
+    Sections 3-4 (Map Data, Player Names) are skipped.
     """
     data = Path(path).read_bytes()
     reader = ReplayReader(data)
@@ -219,8 +415,17 @@ def parse_replay(path: str | Path) -> Replay:
     header_data = reader.read_section(SECTION_SIZES[1])
     header = _parse_header(header_data)
 
+    # Section 2: Commands (dynamic size)
+    # First read a 4-byte section containing the decompressed size,
+    # then read the actual commands section with that size.
+    cmd_size_data = reader.read_section(4)
+    cmd_decompressed_size = struct.unpack_from("<I", cmd_size_data, 0)[0]
+    cmd_data = reader.read_section(cmd_decompressed_size)
+    build_order = _parse_commands(cmd_data)
+
     return Replay(
         replay_id=replay_id_data,
         header=header,
         rep_format=reader.format,
+        build_order=build_order,
     )

@@ -28,7 +28,7 @@ Example:
 uv run python -m replay_analyzer.main replay_analyzer/replays/clbot-1.rep
 ```
 
-Output:
+Output includes game metadata and build orders extracted from the commands section:
 
 ```
 Format:    legacy
@@ -42,7 +42,32 @@ Date:      2026-02-26 10:33:45
 Players:
   Surtur Brood (ZERG, Computer) - Team 1
   CLBot (ZERG, Human) - Team 1
+
+Build Order — CLBot:
+  [2] morph           Drone
+  [380] morph           Drone
+  [618] morph           Drone
+  ...
 ```
+
+## What replays contain (and don't)
+
+Replay files record **player commands** (intents), not game state. This means:
+
+**What you CAN extract:**
+- Build order approximation — "player intended to build X at frame Y"
+- APM / action analysis — command frequency, hotkey usage
+- Strategic timeline — when tech transitions were initiated
+
+**What you CANNOT extract:**
+- Whether a building was canceled or destroyed mid-construction
+- Unit deaths from combat
+- Current supply / resource counts at a given frame
+- Whether a train command actually produced a unit
+
+**Computer AI commands are not recorded.** The replay only captures commands issued through the game client's command buffer — computer AI bypasses this entirely. Games against computer opponents will only show human player actions.
+
+To reconstruct full game state at a given frame, you'd need to simulate the BW engine (e.g. [OpenBW](https://github.com/OpenBW/openbw) or [BWAPI](https://github.com/bwapi/bwapi)).
 
 ## Format References
 
