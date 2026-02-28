@@ -9,14 +9,14 @@ This repository (`bw`) contains a `replay_analyzer` module — a from-scratch bi
 ## Running
 
 ```bash
-uv run python -m replay_analyzer.main <replay.rep>
+uv run python -m replay_analyzer.src.main <replay.rep>
 ```
 
 ## Architecture
 
-- `replay_analyzer/models.py` — Data models (Replay, Header, Player, enums)
-- `replay_analyzer/replay_parser.py` — Binary parser: section reading + decompression + header field extraction
-- `replay_analyzer/main.py` — CLI entry point
+- `replay_analyzer/src/models.py` — Data models (Replay, Header, Player, enums)
+- `replay_analyzer/src/replay_parser.py` — Binary parser: section reading + decompression + header field extraction
+- `replay_analyzer/src/main.py` — CLI entry point
 
 ## Key Dependencies
 

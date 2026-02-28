@@ -18,14 +18,16 @@ uv sync
 
 ## Usage
 
+### View a single replay
+
 ```bash
-uv run python -m replay_analyzer.main <path-to-replay.rep>
+uv run python -m replay_analyzer.src.main view replay_analyzer/replays/clbot-1.rep
 ```
 
-Example:
+The `view` subcommand is optional — passing a `.rep` path directly works too:
 
 ```bash
-uv run python -m replay_analyzer.main replay_analyzer/replays/clbot-1.rep
+uv run python -m replay_analyzer.src.main replay_analyzer/replays/clbot-1.rep
 ```
 
 Output includes game metadata and build orders extracted from the commands section:
@@ -49,6 +51,44 @@ Build Order — CLBot:
   [618] morph           Drone
   ...
 ```
+
+### Batch analyze replays
+
+Process a directory of replays to extract per-race openers with build order signatures:
+
+```bash
+uv run python -m replay_analyzer.src.main analyze replay_analyzer/replays/ -v
+```
+
+Write results to a JSON file:
+
+```bash
+uv run python -m replay_analyzer.src.main analyze replay_analyzer/replays/ -o build_orders.json
+```
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-o/--output` | stdout | Output JSON path |
+| `--frame-cutoff` | 8500 (~6 min) | Max frame for opener window |
+| `--min-duration` | 2000 | Skip replays shorter than N frames |
+| `--race` | all | Filter to TERRAN, PROTOSS, or ZERG |
+| `-v/--verbose` | off | Progress output to stderr |
+
+The output JSON groups openers by race with frequency-counted build order signatures (e.g. `"Depot Rax CC Ebay": 15`), useful as training data for bot development.
+
+### Automatic format sorting
+
+Both `view` and `analyze` automatically detect each replay's format and move it into the correct subfolder before processing:
+
+| Format | Versions | Subfolder |
+|--------|----------|-----------|
+| Legacy | Pre-1.18 (PKWare DCL compression) | `legacy/` |
+| Modern | 1.18–1.20 (zlib compression) | `modern/` |
+| Remastered | 1.21+ (zlib, "seRS" magic) | `remastered/` |
+
+For example, a remastered replay sitting in `replays/legacy/` will be moved to `replays/remastered/` automatically. Files already in the correct subfolder are left in place.
 
 ## What replays contain (and don't)
 

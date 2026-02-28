@@ -15,7 +15,7 @@ from pathlib import Path
 
 import dclimplode
 
-from replay_analyzer.models import (
+from replay_analyzer.src.models import (
     BuildOrderEvent,
     GameSpeed,
     GameType,
@@ -46,6 +46,74 @@ SECTION_SIZES = [
 
 class ReplayParseError(Exception):
     pass
+
+
+# Map internal format names to directory names.
+_FORMAT_DIRS = {
+    "legacy": "legacy",
+    "modern": "modern",
+    "modern121": "remastered",
+}
+
+
+def detect_format(path: str | Path) -> str:
+    """Detect replay format without fully parsing.
+
+    Returns "legacy", "modern", or "modern121".
+    """
+    data = Path(path).read_bytes()
+    if len(data) < 30:
+        raise ReplayParseError("File too small to be a replay")
+    if data[12] == ord("s"):
+        return "modern121"
+    if data[28] == 0x78:
+        return "modern"
+    return "legacy"
+
+
+def sort_replay_file(path: str | Path, verbose: bool = False) -> Path:
+    """Sort a single replay into the correct format subfolder.
+
+    Moves the file into legacy/, modern/, or remastered/ under the same
+    parent directory. Returns the new path (unchanged if already correct).
+    """
+    path = Path(path)
+    fmt = detect_format(path)
+    target_dir_name = _FORMAT_DIRS[fmt]
+
+    # Check if already in the correct subfolder
+    if path.parent.name == target_dir_name:
+        return path
+
+    target_dir = path.parent / target_dir_name
+    # If the file is already inside a format subfolder (wrong one), go up one level
+    if path.parent.name in _FORMAT_DIRS.values():
+        target_dir = path.parent.parent / target_dir_name
+
+    target_dir.mkdir(exist_ok=True)
+    new_path = target_dir / path.name
+    if new_path.exists():
+        # Avoid overwriting; keep in place
+        if verbose:
+            import sys
+            print(f"  Skipping move, {new_path} already exists", file=sys.stderr)
+        return path
+
+    path.rename(new_path)
+    if verbose:
+        import sys
+        print(f"  Sorted {path.name} -> {target_dir_name}/", file=sys.stderr)
+    return new_path
+
+
+def sort_replays_in_dir(directory: str | Path, verbose: bool = False) -> None:
+    """Sort all .rep files in a directory tree into format subfolders."""
+    directory = Path(directory)
+    for rep_path in sorted(directory.rglob("*.rep")):
+        try:
+            sort_replay_file(rep_path, verbose=verbose)
+        except ReplayParseError:
+            pass  # Skip files that can't be detected
 
 
 class ReplayReader:
