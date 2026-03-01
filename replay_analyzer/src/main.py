@@ -1,9 +1,12 @@
 """CLI entry point for the BW replay analyzer."""
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 from replay_analyzer.src.batch_analyzer import run_batch_analysis
+from replay_analyzer.src.build_classifier import classify_build_orders
 from replay_analyzer.src.replay_parser import ReplayParseError, parse_replay, sort_replay_file
 
 
@@ -47,6 +50,30 @@ def view_replay(args: argparse.Namespace) -> None:
                 print(f"  [{e.frame}] {e.event_type:<15} {e.name}")
 
 
+def classify_openers(args: argparse.Namespace) -> None:
+    input_path = Path(args.input_file)
+    if not input_path.is_file():
+        print(f"Error: {input_path} not found", file=sys.stderr)
+        sys.exit(1)
+
+    result = classify_build_orders(input_path)
+
+    output_json = json.dumps(result, indent=2, ensure_ascii=False)
+
+    if args.output:
+        Path(args.output).write_text(output_json, encoding="utf-8")
+        print(f"Classified {len(result['classified_openers'])} openers → {args.output}", file=sys.stderr)
+    else:
+        print(output_json)
+
+    # Print summary to stderr
+    print("\nSummary:", file=sys.stderr)
+    for race, archetypes in sorted(result["summary"].items()):
+        print(f"  {race}:", file=sys.stderr)
+        for name, count in archetypes.items():
+            print(f"    {name}: {count}", file=sys.stderr)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="replay_analyzer",
@@ -87,6 +114,15 @@ def build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true", help="Progress output to stderr"
     )
 
+    # classify subcommand
+    classify_parser = subparsers.add_parser(
+        "classify", help="Classify build orders into named archetypes"
+    )
+    classify_parser.add_argument("input_file", help="Path to build_orders.json")
+    classify_parser.add_argument(
+        "-o", "--output", help="Output JSON path (default: stdout)"
+    )
+
     return parser
 
 
@@ -102,6 +138,8 @@ def main() -> None:
         view_replay(args)
     elif args.command == "analyze":
         run_batch_analysis(args)
+    elif args.command == "classify":
+        classify_openers(args)
     else:
         parser.print_help()
         sys.exit(1)
